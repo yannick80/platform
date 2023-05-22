@@ -21,11 +21,17 @@ class EntityIndexingMessage implements AsyncMessageInterface
      */
     private array $skip = [];
 
+    /**
+     * @var array<string>|null
+     */
+    private ?array $allow = [];
+
     public function __construct(
         protected $data,
         protected $offset = null,
         ?Context $context = null,
-        private readonly bool $forceQueue = false
+        private readonly bool $forceQueue = false,
+        private readonly bool $immediate = false
     ) {
         $this->context = $context ?? Context::createDefaultContext();
     }
@@ -89,6 +95,20 @@ class EntityIndexingMessage implements AsyncMessageInterface
 
     public function allow(string $name): bool
     {
+        if (!empty($this->allow)) {
+            return \in_array($name, $this->allow, true);
+        }
+
         return !\in_array($name, $this->getSkip(), true);
+    }
+
+    public function immediate(): bool
+    {
+        return $this->immediate;
+    }
+
+    public function addAllow(string ...$allow): void
+    {
+        $this->allow = \array_unique(\array_merge($this->allow, \array_values($allow)));
     }
 }

@@ -129,6 +129,17 @@ class EntityIndexerRegistry
                 continue;
             }
 
+            if ($message instanceof CompositeEntityIndexingMessage) {
+                foreach ($message->getCollection() as $message) {
+                    $message->setIndexer($indexer->getName());
+                    self::addSkips($message, $context);
+
+                    $this->sendOrHandle($message, $useQueue);
+                }
+
+                continue;
+            }
+
             $message->setIndexer($indexer->getName());
             self::addSkips($message, $context);
 
@@ -203,11 +214,18 @@ class EntityIndexerRegistry
 
     private function sendOrHandle(EntityIndexingMessage $message, bool $useQueue): void
     {
+        if ($message->immediate()) {
+            $this->__invoke($message);
+
+            return;
+        }
+
         if ($useQueue || $message->forceQueue()) {
             $this->messageBus->dispatch($message);
 
             return;
         }
+
         $this->__invoke($message);
     }
 

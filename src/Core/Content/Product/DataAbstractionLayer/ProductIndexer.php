@@ -14,7 +14,6 @@ use Shopware\Core\Framework\DataAbstractionLayer\EntityRepository;
 use Shopware\Core\Framework\DataAbstractionLayer\Event\EntityWrittenContainerEvent;
 use Shopware\Core\Framework\DataAbstractionLayer\Indexing\ChildCountUpdater;
 use Shopware\Core\Framework\DataAbstractionLayer\Indexing\EntityIndexer;
-use Shopware\Core\Framework\DataAbstractionLayer\Indexing\EntityIndexerRegistry;
 use Shopware\Core\Framework\DataAbstractionLayer\Indexing\EntityIndexingMessage;
 use Shopware\Core\Framework\DataAbstractionLayer\Indexing\InheritanceUpdater;
 use Shopware\Core\Framework\DataAbstractionLayer\Indexing\ManyToManyIdFieldUpdater;
@@ -22,7 +21,6 @@ use Shopware\Core\Framework\Log\Package;
 use Shopware\Core\Framework\Plugin\Exception\DecorationPatternException;
 use Shopware\Core\Framework\Uuid\Uuid;
 use Shopware\Core\Profiling\Profiler;
-use Symfony\Component\Messenger\MessageBusInterface;
 use Symfony\Contracts\EventDispatcher\EventDispatcherInterface;
 
 #[Package('core')]
@@ -103,13 +101,30 @@ class ProductIndexer extends EntityIndexer
     {
         $ids = array_values(array_unique(array_filter($message->getData())));
 
+        $context = $message->getContext();
+
         if (empty($ids)) {
             return;
         }
 
-        $parentIds = $this->filterVariants($ids);
+        // only inheritance update
+        if ($message instanceof InheritanceUpdateMessage) {
+            Profiler::trace('product:indexer:inheritance', function () use ($ids, $context): void {
+                $this->inheritanceUpdater->update(ProductDefinition::ENTITY_NAME, $ids, $context);
+            });
 
-        $context = $message->getContext();
+            return;
+        }
+
+        if ($message instanceof StockUpdateMessage) {
+            Profiler::trace('product:indexer:stock', function () use ($ids, $context): void {
+                $this->stockUpdater->update($ids, $context);
+            });
+
+            return;
+        }
+
+        $parentIds = $this->filterVariants($ids);
 
         if ($message->allow(self::INHERITANCE_UPDATER)) {
             Profiler::trace('product:indexer:inheritance', function () use ($ids, $context): void {

@@ -4,40 +4,23 @@ namespace Shopware\Core\Content\Product\DataAbstractionLayer;
 
 use Doctrine\DBAL\ArrayParameterType;
 use Doctrine\DBAL\Connection;
-use Shopware\Core\Content\Product\Events\ProductIndexerEvent;
 use Shopware\Core\Content\Product\ProductDefinition;
-use Shopware\Core\Defaults;
-use Shopware\Core\Framework\DataAbstractionLayer\Dbal\Common\IterableQuery;
-use Shopware\Core\Framework\DataAbstractionLayer\Dbal\Common\IteratorFactory;
-use Shopware\Core\Framework\DataAbstractionLayer\Doctrine\RetryableQuery;
-use Shopware\Core\Framework\DataAbstractionLayer\EntityRepository;
 use Shopware\Core\Framework\DataAbstractionLayer\Event\EntityWrittenContainerEvent;
-use Shopware\Core\Framework\DataAbstractionLayer\Indexing\ChildCountUpdater;
-use Shopware\Core\Framework\DataAbstractionLayer\Indexing\EntityIndexer;
-use Shopware\Core\Framework\DataAbstractionLayer\Indexing\EntityIndexerRegistry;
+use Shopware\Core\Framework\DataAbstractionLayer\Indexing\CompositeEntityIndexingMessage;
 use Shopware\Core\Framework\DataAbstractionLayer\Indexing\EntityIndexingMessage;
-use Shopware\Core\Framework\DataAbstractionLayer\Indexing\InheritanceUpdater;
-use Shopware\Core\Framework\DataAbstractionLayer\Indexing\ManyToManyIdFieldUpdater;
 use Shopware\Core\Framework\Log\Package;
 use Shopware\Core\Framework\Plugin\Exception\DecorationPatternException;
 use Shopware\Core\Framework\Uuid\Uuid;
-use Shopware\Core\Profiling\Profiler;
-use Symfony\Component\Messenger\MessageBusInterface;
-use Symfony\Contracts\EventDispatcher\EventDispatcherInterface;
 
 #[Package('core')]
 class ProductUpdateMessageHandler extends AbstractProductUpdateMessageHandler
 {
-    public function __construct(
-        private readonly InheritanceUpdater $inheritanceUpdater,
-        private readonly StockUpdater $stockUpdater,
-        private readonly Connection $connection,
-        private readonly MessageBusInterface $messageBus
-    ) {
-
+    public function __construct(private readonly Connection $connection)
+    {
     }
 
-    public function getDecorated():self {
+    public function getDecorated(): self
+    {
         throw new DecorationPatternException(self::class);
     }
 
@@ -49,17 +32,21 @@ class ProductUpdateMessageHandler extends AbstractProductUpdateMessageHandler
             return null;
         }
 
-        Profiler::trace('product:indexer:inheritance', function () use ($updates, $event): void {
-            $this->inheritanceUpdater->update(ProductDefinition::ENTITY_NAME, $updates, $event->getContext());
-        });
+        $collection = new CompositeEntityIndexingMessage();
 
+        // trigger immediate inheritance update
+        $inheritance = new InheritanceUpdateMessage(array_values($updates), null, $event->getContext(), false, true);
+        $collection->add($inheritance);
+
+        // trigger immediate stock update
         $stocks = $event->getPrimaryKeysWithPropertyChange(ProductDefinition::ENTITY_NAME, ['stock', 'isCloseout', 'minPurchase']);
-        Profiler::trace('product:indexer:stock', function () use ($stocks, $event): void {
-            $this->stockUpdater->update(array_values($stocks), $event->getContext());
-        });
+        $collection->add(
+            new StockUpdateMessage(array_values($stocks), null, $event->getContext(), false, true)
+        );
 
         $message = new ProductIndexingMessage(array_values($updates), null, $event->getContext());
         $message->addSkip(ProductIndexer::INHERITANCE_UPDATER, ProductIndexer::STOCK_UPDATER);
+        $collection->add($message);
 
         $delayed = \array_unique(\array_filter(\array_merge(
             $this->getParentIds($updates),
@@ -67,14 +54,10 @@ class ProductUpdateMessageHandler extends AbstractProductUpdateMessageHandler
         )));
 
         foreach (\array_chunk($delayed, 50) as $chunk) {
-            $child = new ProductIndexingMessage($chunk, null, $event->getContext());
-            $child->setIndexer($this->getName());
-            EntityIndexerRegistry::addSkips($child, $event->getContext());
-
-            $this->messageBus->dispatch($child);
+            $collection->add(new ProductIndexingMessage($chunk, null, $event->getContext(), true));
         }
 
-        return $message;
+        return $collection;
     }
 
     /**
