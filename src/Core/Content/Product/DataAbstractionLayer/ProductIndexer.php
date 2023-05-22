@@ -59,7 +59,7 @@ class ProductIndexer extends EntityIndexer
         private readonly CheapestPriceUpdater $cheapestPriceUpdater,
         private readonly ProductStreamUpdater $streamUpdater,
         private readonly StatesUpdater $statesUpdater,
-        private readonly MessageBusInterface $messageBus
+        private readonly ProductUpdateMessageHandler $productUpdateMessageHandler
     ) {
     }
 
@@ -86,38 +86,7 @@ class ProductIndexer extends EntityIndexer
 
     public function update(EntityWrittenContainerEvent $event): ?EntityIndexingMessage
     {
-        $updates = $event->getPrimaryKeys(ProductDefinition::ENTITY_NAME);
-
-        if (empty($updates)) {
-            return null;
-        }
-
-        Profiler::trace('product:indexer:inheritance', function () use ($updates, $event): void {
-            $this->inheritanceUpdater->update(ProductDefinition::ENTITY_NAME, $updates, $event->getContext());
-        });
-
-        $stocks = $event->getPrimaryKeysWithPropertyChange(ProductDefinition::ENTITY_NAME, ['stock', 'isCloseout', 'minPurchase']);
-        Profiler::trace('product:indexer:stock', function () use ($stocks, $event): void {
-            $this->stockUpdater->update(array_values($stocks), $event->getContext());
-        });
-
-        $message = new ProductIndexingMessage(array_values($updates), null, $event->getContext());
-        $message->addSkip(self::INHERITANCE_UPDATER, self::STOCK_UPDATER);
-
-        $delayed = \array_unique(\array_filter(\array_merge(
-            $this->getParentIds($updates),
-            $this->getChildrenIds($updates)
-        )));
-
-        foreach (\array_chunk($delayed, 50) as $chunk) {
-            $child = new ProductIndexingMessage($chunk, null, $event->getContext());
-            $child->setIndexer($this->getName());
-            EntityIndexerRegistry::addSkips($child, $event->getContext());
-
-            $this->messageBus->dispatch($child);
-        }
-
-        return $message;
+        return $this->productUpdateMessageHandler->update($event);
     }
 
     public function getTotal(): int
@@ -238,38 +207,6 @@ class ProductIndexer extends EntityIndexer
             self::STREAM_UPDATER,
             self::SEARCH_KEYWORD_UPDATER,
         ];
-    }
-
-    /**
-     * @param array<string> $ids
-     *
-     * @return array<string>
-     */
-    private function getChildrenIds(array $ids): array
-    {
-        $childrenIds = $this->connection->fetchFirstColumn(
-            'SELECT DISTINCT LOWER(HEX(id)) as id FROM product WHERE parent_id IN (:ids)',
-            ['ids' => Uuid::fromHexToBytesList($ids)],
-            ['ids' => ArrayParameterType::STRING]
-        );
-
-        return array_unique(array_filter($childrenIds));
-    }
-
-    /**
-     * @param array<string> $ids
-     *
-     * @return string[]
-     */
-    private function getParentIds(array $ids): array
-    {
-        $parentIds = $this->connection->fetchFirstColumn(
-            'SELECT DISTINCT LOWER(HEX(product.parent_id)) as id FROM product WHERE id IN (:ids)',
-            ['ids' => Uuid::fromHexToBytesList($ids)],
-            ['ids' => ArrayParameterType::STRING]
-        );
-
-        return array_unique(array_filter($parentIds));
     }
 
     /**
